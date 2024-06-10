@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>二维码展示</title>
+    <script>
+        function updateCountdown(expireTime) {
+            const countdownElement = document.getElementById("countdown");
+            const interval = setInterval(() => {
+                const currentTime = Math.floor(Date.now() / 1000);
+                const remainingTime = expireTime - currentTime;
+                if (remainingTime > 0) {
+                    countdownElement.innerText = remainingTime + " 秒";
+                } else {
+                    countdownElement.innerText = "二维码已过期";
+                    clearInterval(interval);
+                    setTimeout(() => {
+                        window.close();
+                    }, 3000);
+                }
+            }, 1000);
+        }
+    </script>
+</head>
+<body onload="updateCountdown({{ expire_time }})">
+    <h2>登录ID: {{ login_id }}</h2>
+    <h2>剩余时间: <span id="countdown"></span></h2>
+    <h3>二维码图</h3>
+    <img src="data:image/png;base64,{{ qr_code }}" alt="QR Code">
+</body>
+</html>
