@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>抖音登录信息展示</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f2f2f2;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        #login-info-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .login-info {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 8px;
+            background-color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .login-info h2 {
+            margin: 0 0 10px;
+            color: #555;
+        }
+
+        .login-info img {
+            width: 200px;
+            height: 200px;
+            object-fit: cover;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .login-info .verify-code-input {
+            margin: 10px 0;
+            padding: 8px;
+            width: calc(100% - 20px);
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .login-info .send-button {
+            margin: 10px 0;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .login-info .send-button:hover {
+            background-color: #45a049;
+        }
+
+        .countdown {
+            font-weight: bold;
+            color: #d9534f;
+        }
+
+        .add-user-button {
+            margin: 20px auto;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background-color: #007BFF;
+            color: white;
+            cursor: pointer;
+            display: block;
+            transition: background-color 0.3s;
+        }
+
+        .add-user-button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+    <script>
+        function updateCountdown(expireTime, countdownElement, qrCodeElement) {
+            const interval = setInterval(() => {
+                const currentTime = Math.floor(Date.now() / 1000);
+                const remainingTime = expireTime - currentTime;
+                if (remainingTime > 0) {
+                    countdownElement.innerText = remainingTime + " 秒";
+                } else {
+                    countdownElement.innerText = "二维码已过期";
+                    qrCodeElement.style.display = 'none'; // 隐藏二维码
+                    clearInterval(interval);
+                }
+            }, 1000);
+        }
+
+        async function sendVerificationCode(loginId, verifyCode) {
+            const response = await fetch('/api/douyin/update_verification_code', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({loginId: loginId, verifyCode: verifyCode})
+            });
+
+            if (response.ok) {
+                alert("验证码已发送");
+            } else {
+                alert("发送验证码失败");
+            }
+        }
+
+        async function addDouyinUser() {
+            // 生成loginId
+            const now = new Date();
+            const yyyyMMddHHmm = now.getFullYear().toString() +
+                (now.getMonth() + 1).toString().padStart(2, '0') +
+                now.getDate().toString().padStart(2, '0') +
+                now.getHours().toString().padStart(2, '0') +
+                now.getMinutes().toString().padStart(2, '0');
+            const randomString = Math.random().toString(36).substring(2, 6).toUpperCase();
+            const loginId = yyyyMMddHHmm + randomString;
+
+            // 强制刷新页面
+            setTimeout(() => {
+                location.reload();
+            }, 8000);
+
+            const response = await fetch('http://127.0.0.1:10001/api/douyin/get_qr_code', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({loginId: loginId, callbackUrl: 'http://127.0.0.1:10001/api/douyin/callback'})
+            });
+
+            if (response.ok) {
+                alert("已添加新的抖音用户");
+            } else {
+                alert("添加抖音用户失败");
+            }
+        }
+
+        window.onload = () => {
+            const loginInfoElements = document.querySelectorAll('.login-info');
+            loginInfoElements.forEach(element => {
+                const expireTime = parseInt(element.getAttribute('data-expire-time'), 10);
+                const countdownElement = element.querySelector('.countdown');
+                const qrCodeElement = element.querySelector('img');
+                updateCountdown(expireTime, countdownElement, qrCodeElement);
+
+                const sendButton = element.querySelector('.send-button');
+                const inputField = element.querySelector('.verify-code-input');
+                sendButton.addEventListener('click', () => {
+                    const loginId = element.getAttribute('data-login-id');
+                    const verifyCode = inputField.value;
+                    sendVerificationCode(loginId, verifyCode);
+                });
+            });
+
+            const addUserButton = document.querySelector('.add-user-button');
+            addUserButton.addEventListener('click', addDouyinUser);
+        };
+    </script>
+</head>
+<body>
+<h1>抖音登录信息展示</h1>
+<div id="login-info-container">
+    {% for login_id, info in douyin_login_info_map.items() %}
+    <div class="login-info" data-expire-time="{{ info.expireTime }}" data-login-id="{{ info.loginId }}">
+        <h2>抖音号: {{ info.douyinId }}</h2>
+        <p>登录ID: {{ info.loginId }}</p>
+        <p>登录状态： {{ info.status }}</p>
+        <p>二维码到期时间: <span class="countdown"></span></p>
+        <img src="data:image/png;base64,{{ info.qrCode }}" alt="QR Code">
+        <input type="text" class="verify-code-input" placeholder="输入验证码">
+        <button class="send-button">同步验证码</button>
+    </div>
+    {% endfor %}
+</div>
+<button class="add-user-button">添加抖音用户</button>
+</body>
+</html>

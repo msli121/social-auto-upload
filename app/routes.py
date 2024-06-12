@@ -1,14 +1,21 @@
 from flask import Flask, jsonify, request, render_template
 from app.douyin.auto_upload import *
-import time
 import threading
 
 # 创建全局变量来存储二维码和到期时间
-qr_code_info = {
-    "loginId": "",
-    "qrCode": "",
-    "expireTime": 0
-}
+douyin_login_info_map = {}
+
+
+# douyin_login_info_map = {
+#     "2024061000001": {
+#         "loginId": "2024061000001",
+#         "douyinId": "pupusong",
+#         "qrCode": "",
+#         "expireTime": "",
+#         "verifyCode": ""
+#     }
+# }
+
 
 def init_routes(app):
     @app.route('/api/douyin/get_qr_code', methods=['POST'])
@@ -18,10 +25,26 @@ def init_routes(app):
             login_id = data.get('loginId')
             callback_url = data.get('callbackUrl')
 
+            new_login_info = {
+                "loginId": login_id,
+                "douyinId": "",
+                "qrCode": "",
+                "expireTime": "",
+                "verifyCode": "",
+                "status": "未登录"
+            }
+            douyin_login_info_map[login_id] = new_login_info
+
             if not login_id or not callback_url:
                 return jsonify({"code": 1, "msg": "缺少 loginId 或 callbackUrl", "data": {}}), 400
 
-            img_str, storage_state = await get_douyin_qr_code(login_id, callback_url)
+            img_str, cookie_info, douyin_id = await get_douyin_qr_code(login_id, callback_url, callback_url,
+                                                                       douyin_login_info_map)
+
+            new_login_info["douyinId"] = douyin_id
+            new_login_info["status"] = "已登录"
+            new_login_info["qrCode"] = ""
+
             if img_str is None:
                 return jsonify({"code": 1, "msg": "回传二维码图片失败", "data": {}}), 500
 
@@ -29,10 +52,9 @@ def init_routes(app):
                 "code": 0,
                 "msg": "success",
                 "data": {
-                    # "checkType": "qrcode",
-                    # "qrCode": img_str,
                     "loginId": login_id,
-                    "cookieInfo": storage_state
+                    "douyinId": douyin_id,
+                    "cookieInfo": cookie_info
                 }
             }
             return jsonify(response), 200
@@ -45,11 +67,11 @@ def init_routes(app):
             return jsonify(response), 500
 
     @app.route('/api/douyin/check_cookie', methods=['POST'])
-    async def restore_session_route():
+    async def check_cookie_auth():
         try:
             data = request.json
-            storage_state_str = data.get('cookieInfo')
-            cookie_auth = await check_cookie(storage_state_str)
+            douyinId = data.get('douyinId')
+            cookie_auth = await check_cookie(douyinId)
             response = {
                 "code": 0,
                 "msg": "处理成功",
@@ -66,25 +88,55 @@ def init_routes(app):
             }
             return jsonify(response), 500
 
-    @app.route('/api/douyin/qr_code/callback', methods=['POST'])
+    @app.route('/api/douyin/callback', methods=['POST'])
     def douyin_qr_code_callback():
-        global qr_code_info
+        global douyin_login_info_map
         data = request.json
-        qr_code_info["loginId"] = data.get("loginId")
-        qr_code_info["qrCode"] = data.get("qrCode")
-        qr_code_info["expireTime"] = data.get("expireTime")
+        login_id = data.get("loginId")
+        if login_id in douyin_login_info_map:
+            login_info = douyin_login_info_map[login_id]
+            login_info["qrCode"] = data.get("qrCode")
+            login_info["verifyCode"] = ""
+            login_info["expireTime"] = data.get("expireTime")
+        else:
+            douyin_login_info_map[login_id] = {
+                "loginId": login_id,
+                "qrCode": data.get("qrCode"),
+                "expireTime": data.get("expireTime"),
+                "verifyCode": ""
+            }
         return jsonify({"code": 0, "msg": "success"}), 200
 
-    @app.route('/display_qr_code')
+    @app.route('/display')
     def display_qr_code():
-        return render_template('display_qr_code.html', login_id=qr_code_info["loginId"], qr_code=qr_code_info["qrCode"], expire_time=qr_code_info["expireTime"])
+        return render_template('display_douyin_login_info.html', douyin_login_info_map=douyin_login_info_map)
 
-    def expire_checker():
-        global qr_code_info
+    @app.route('/api/douyin/update_verification_code', methods=['POST'])
+    def update_verification_code():
+        global douyin_login_info_map
+        data = request.json
+        login_id = data.get("loginId")
+        verify_code = data.get("verifyCode")
+
+        if login_id in douyin_login_info_map:
+            douyin_login_info_map[login_id]["verifyCode"] = verify_code
+            douyin_login_info_map[login_id]["qrCode"] = ""
+            return jsonify({"code": 0, "msg": "验证码已更新"}), 200
+        else:
+            return jsonify({"code": 1, "msg": "登录ID不存在"}), 400
+
+    async def cookie_auto_check():
+        global douyin_login_info_map
         while True:
-            if qr_code_info["expireTime"] > 0 and time.time() > qr_code_info["expireTime"]:
-                qr_code_info = {"loginId": "", "qrCode": "", "expireTime": 0}
-            time.sleep(1)
+
+            for login_id, info in douyin_login_info_map.items():
+                if info.douyinId:
+                    cookie_auth = await check_cookie(info["douyinId"])
+                    if cookie_auth:
+                        info["status"] = "已登录"
+                    else:
+                        info["status"] = "未登录"
+            await asyncio.sleep(20)
 
     # 启动线程来检查二维码的过期时间
-    threading.Thread(target=expire_checker, daemon=True).start()
+    threading.Thread(target=cookie_auto_check, daemon=True).start()

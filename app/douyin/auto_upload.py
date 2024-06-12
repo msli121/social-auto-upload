@@ -4,6 +4,7 @@ import json
 import requests
 import asyncio
 import time
+import aiohttp
 from pathlib import Path
 from datetime import datetime, timedelta
 from config import BASE_DIR
@@ -28,7 +29,7 @@ async def restore_session_with_storage_state(storage_state_str, url):
         await browser.close()
 
 
-async def get_douyin_qr_code(login_id, callback_url):
+async def get_douyin_qr_code(login_id, qr_code_callback_url, verification_api_url, douyin_login_info_map):
     """
     获取抖音创作者平台的登录二维码，并等待用户扫码登录。返回二维码图片的 Base64 编码字符串和会话存储状态。
 
@@ -69,19 +70,75 @@ async def get_douyin_qr_code(login_id, callback_url):
         # 异步回传二维码图片到指定callback_url接口上，并附带login_id和expire_time
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as pool:
-            loop.run_in_executor(pool, send_qr_code_to_callback, login_id, img_str, callback_url, expire_time)
+            loop.run_in_executor(pool, send_qr_code_to_callback, login_id, img_str, qr_code_callback_url, expire_time)
 
         # 等待用户扫码，最多等待70秒
         try:
             # 等待页面跳转到指定的 URL，没进入，则自动等待到超时
             print('[-] 等待用户扫码...')
-            await wait_for_multiple_urls(page, [
+            login_res = await wait_for_multiple_urls(page, [
                 "https://creator.douyin.com/creator-micro/content/upload",
                 "https://creator.douyin.com/creator-micro/home"
             ], timeout=70000)
-            print("[-] 用户扫码成功")
-        except asyncio.TimeoutError:
-            print("[+] 等待用户扫码,70秒超时")
+
+            if login_res == "send_code":
+                print("[-] 需要接收短信验证")
+                # 点击“接收短信验证”文本
+                # await page.click("span:has-text('接收短信验证')")
+                # 点击“接收短信验证”文本
+                await page.click("p.uc-ui-typography_text.uc-ui-lists_item_content_title:has-text('接收短信验证')")
+                print("[-] 已点击 接收短信验证")
+
+                try:
+                    # 点击“获取验证码”按钮
+                    await page.click("div.uc-ui-input_right:has-text('获取验证码')")
+                    print("[-] 已点击 获取验证码")
+                    print("[-] 等待用户输入验证码...")
+                except Exception as e:
+                    print("[error] [playwright] 点击【获取验证码】按钮错误：", e)
+                    return None, None
+
+                try:
+                    verification_code = await get_verification_code_from_map(login_id, douyin_login_info_map)
+                    print(f"[-] 获取到的验证码: {verification_code}")
+                except Exception as e:
+                    print("[error] 等待用户输入验证码超时:", e)
+                    return None, None
+
+                try:
+                    # 在页面中输入验证码
+                    await page.fill("input[type='number'][placeholder='请输入验证码']", verification_code)
+                except Exception as e:
+                    print("[error] [playwright] 在页面中输入验证码出错:", e)
+                    return None, None
+
+                try:
+                    # 点击“验证”按钮
+                    await page.click("div.uc-ui-verify_sms-verify_button.primary.default.uc-ui-button:has-text('验证')")
+                    print("[-] 已点击 提交验证码")
+                except Exception as e:
+                    print("[error] [playwright] 点击“验证”按钮出错:", e)
+                    return None, None
+
+            print("[-] 页面登录成功")
+
+            douyin_id = ""
+            try:
+                # 使用文本选择器找到“抖音号：”后面的内容
+                douyin_id_element = await page.locator("text=抖音号：").element_handle()
+                if douyin_id_element:
+                    douyin_id_text = await douyin_id_element.inner_text()
+                    # 提取“抖音号：”后面的部分
+                    douyin_id = douyin_id_text.split("抖音号：")[1].strip()
+                    print("抖音号：", douyin_id)
+                else:
+                    print("未找到抖音号")
+            except Exception as e:
+                print("[error] [playwright] 获取抖音号出错:", e)
+
+        except Exception as e:
+            print(f"[+] 等待用户输入登录超时: {e}")
+            return None, None
 
         # 获取存储状态并转换为字符串
         storage_state = await context.storage_state()
@@ -89,7 +146,7 @@ async def get_douyin_qr_code(login_id, callback_url):
         # print("[-] 获取到的 storage_state:", storage_state_str)
 
         # 将存储状态写入文件，以 login_id 命名
-        storage_file_name = Path(BASE_DIR / "app" / "douyin" / "accounts" / f"{login_id}.json")
+        storage_file_name = Path(BASE_DIR / "app" / "douyin" / "accounts" / f"{douyin_id}.json")
         storage_file_name.parent.mkdir(parents=True, exist_ok=True)  # 确保目录存在
         with open(storage_file_name, "w") as storage_file:
             storage_file.write(storage_state_str)
@@ -98,9 +155,10 @@ async def get_douyin_qr_code(login_id, callback_url):
         # 关闭浏览器
         await browser.close()
 
-        return img_str, storage_file_name
+        return img_str, storage_file_name, douyin_id
 
-async def check_cookie(account_file):
+
+async def check_cookie(douyin_id):
     """
     检查存储状态中的 cookie 是否有效。
 
@@ -120,7 +178,7 @@ async def check_cookie(account_file):
         browser = await playwright.chromium.launch(headless=False)
         # storage_state = json.loads(storage_state_str)
         # context = await browser.new_context(storage_state=storage_state)
-        account_file = Path(BASE_DIR / "app" / "douyin" / "accounts" / f"{account_file}")
+        account_file = Path(BASE_DIR / "app" / "douyin" / "accounts" / f"{douyin_id}.json")
         account_file = str(account_file)
         context = await browser.new_context(storage_state=account_file)
         page = await context.new_page()
@@ -143,26 +201,34 @@ async def check_cookie(account_file):
 
 async def wait_for_multiple_urls(page, urls, timeout):
     """
-        等待页面导航到指定的多个 URL 中的一个，直到达到超时时间。
-        该方法会循环检查页面的当前 URL，并在匹配到目标 URL 或达到超时时间时返回或抛出超时异常。
-        Args:
-            page (playwright.async_api.Page): Playwright 页面对象，用于操作和检查页面状态。
-            urls (list): 包含多个目标 URL 的列表，方法会等待页面导航到这些 URL 中的任意一个。
-            timeout (int): 最大等待时间（毫秒）。如果在此时间内未导航到目标 URL，则抛出超时异常。
-        Raises:
-            asyncio.TimeoutError: 如果在指定的时间内未导航到目标 URL。
-        Returns:
-            None
-        """
+    等待页面导航到指定的多个 URL 中的一个，直到达到超时时间。
+    该方法会循环检查页面的当前 URL，并在匹配到目标 URL 或页面包含 "发送短信验证" 文本时返回结果字符串。
+
+    Args:
+        page (playwright.async_api.Page): Playwright 页面对象，用于操作和检查页面状态。
+        urls (list): 包含多个目标 URL 的列表，方法会等待页面导航到这些 URL 中的任意一个。
+        timeout (int): 最大等待时间（毫秒）。如果在此时间内未导航到目标 URL 或包含指定文本的元素，则抛出超时异常。
+
+    Raises:
+        asyncio.TimeoutError: 如果在指定的时间内未导航到目标 URL 或包含指定文本的元素。
+
+    Returns:
+        str: "login_success" 表示成功登录，"send_code" 表示页面包含 "发送短信验证" 文本。
+    """
     end_time = asyncio.get_event_loop().time() + timeout / 1000
     while True:
         current_url = page.url
         if current_url in urls:
-            return
-        if asyncio.get_event_loop().time() > end_time:
-            raise asyncio.TimeoutError("Timeout waiting for one of the specified URLs")
-        await asyncio.sleep(0.1)
+            return "login_success"
 
+        # 检查页面是否包含 "发送短信验证" 文本
+        if await page.locator("text=发送短信验证").count() > 0:
+            return "send_code"
+
+        if asyncio.get_event_loop().time() > end_time:
+            raise asyncio.TimeoutError("Timeout waiting for one of the specified URLs or text '发送短信验证'")
+
+        await asyncio.sleep(0.1)
 
 
 def send_qr_code_to_callback(login_id, qr_code, callback_url, expire_time):
@@ -189,3 +255,59 @@ def send_qr_code_to_callback(login_id, qr_code, callback_url, expire_time):
         print("[-] 成功回传二维码图片到回调URL")
     except requests.RequestException as e:
         print(f"[+] 回传二维码图片失败: {e}")
+
+
+async def get_verification_code(api_url, timeout=60):
+    """
+    调用其他 HTTP 接口获取用户输入的验证码，超过 60 秒后无输入则超时。
+
+    Args:
+        api_url (str): 用于获取验证码的 API URL。
+        timeout (int): 最大等待时间（秒）。如果在此时间内未获取到验证码，则抛出超时异常。
+
+    Raises:
+        asyncio.TimeoutError: 如果在指定的时间内未获取到验证码。
+
+    Returns:
+        str: 获取到的验证码。
+    """
+    end_time = asyncio.get_event_loop().time() + timeout
+    while True:
+        if asyncio.get_event_loop().time() > end_time:
+            raise asyncio.TimeoutError("Timeout waiting for verification code")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    code = result.get("verification_code")
+                    if code:
+                        return code
+
+        await asyncio.sleep(1)  # 等待一秒后再次检查
+
+
+async def get_verification_code_from_map(login_id, douyin_login_info_map, timeout=60):
+    """
+    从 douyin_login_info_map 中获取指定 loginId 下的 verificationCode 字段。
+    如果 verificationCode 不存在或一直为空，则等待 1 秒后再获取，最多等待 60 秒。
+
+    Args:
+        login_id (str): 用户登录ID。
+        timeout (int): 最大等待时间（秒）。如果在此时间内未获取到验证码，则抛出超时异常。
+
+    Raises:
+        asyncio.TimeoutError: 如果在指定的时间内未获取到有效的验证码。
+
+    Returns:
+        str: 获取到的验证码。
+    """
+    end_time = asyncio.get_event_loop().time() + timeout
+    while True:
+        if login_id in douyin_login_info_map and douyin_login_info_map[login_id].get("verifyCode"):
+            return douyin_login_info_map[login_id]["verifyCode"]
+
+        if asyncio.get_event_loop().time() > end_time:
+            raise asyncio.TimeoutError("Timeout waiting for verification code")
+
+        await asyncio.sleep(1)

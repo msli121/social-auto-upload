@@ -4,7 +4,9 @@ eventlet
 schedule
 cf_clearance
 biliup
-
 flask
 requests
 jinja2
+Flask-SQLAlchemy
+Flask-Migrate
+PyMySQL
